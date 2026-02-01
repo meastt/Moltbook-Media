@@ -174,6 +174,69 @@ class MoltMediaAgent:
             logger.error(f"MoltX API call failed: {e}")
             return None
 
+    def _call_moltbook_api(self, endpoint: str, method: str = "GET", data: Optional[Dict] = None, retries: int = 3) -> Optional[Dict]:
+        """Make API call to Moltbook with retry logic"""
+        base_url = "https://www.moltbook.com/api/v1"
+        url = f"{base_url}{endpoint}"
+
+        cmd = ["curl", "-s", "-X", method]
+        cmd.extend(["-H", f"Authorization: Bearer {self.moltbook_api_key}"])
+        cmd.extend(["-H", "Content-Type: application/json"])
+
+        if data:
+            cmd.extend(["-d", json.dumps(data)])
+
+        cmd.append(url)
+
+        for attempt in range(retries):
+            try:
+                if self.dry_run:
+                    logger.info(f"[DRY RUN] Would call Moltbook: {method} {endpoint}")
+                    return {"dry_run": True}
+
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+                if result.returncode != 0:
+                    logger.error(f"Moltbook API error (attempt {attempt + 1}/{retries}): {result.stderr}")
+                    if attempt < retries - 1:
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                    return None
+
+                response = json.loads(result.stdout) if result.stdout else None
+
+                # Check if successful
+                if response and response.get("success"):
+                    return response
+                else:
+                    logger.error(f"Moltbook API returned error (attempt {attempt + 1}/{retries}): {response}")
+                    if attempt < retries - 1:
+                        time.sleep(2 ** attempt)
+                        continue
+                    return None
+
+            except subprocess.TimeoutExpired:
+                logger.error(f"Moltbook API timeout (attempt {attempt + 1}/{retries})")
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                return None
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse Moltbook response (attempt {attempt + 1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                return None
+            except Exception as e:
+                logger.error(f"Moltbook API call failed (attempt {attempt + 1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                return None
+
+        logger.error(f"Moltbook API failed after {retries} attempts")
+        return None
+
     def should_do_wire_scan(self) -> bool:
         """Check if it's time for a wire scan (every 30-60 minutes)"""
         if not self.state["last_wire_scan"]:
@@ -418,28 +481,69 @@ Write 80-120 words. Be insightful, not urgent. Timeless, not trendy.
         import random
         return random.random() < 0.3
 
-    def _create_post(self, content: str, source: str = "general"):
-        """Create a post on MoltX"""
-        logger.info(f"Creating post from {source}...")
+    def _create_post(self, content: str, source: str = "general", title: Optional[str] = None, moltbook_content: Optional[str] = None):
+        """
+        Create a post on BOTH MoltX and Moltbook (dual-post)
 
-        # Ensure content is within limits
-        if len(content) > 500:
-            content = content[:497] + "..."
+        Args:
+            content: Main content for MoltX (max 500 chars)
+            source: Source of the post (wire_scan, editorial, etc.)
+            title: Title for Moltbook post (optional, auto-generated if not provided)
+            moltbook_content: Extended content for Moltbook (optional, uses content if not provided)
+        """
+        logger.info(f"Creating dual-post from {source}...")
 
-        post_data = {
-            "content": content,
+        # MoltX post (short form)
+        moltx_content = content
+        if len(moltx_content) > 500:
+            moltx_content = moltx_content[:497] + "..."
+
+        moltx_data = {
+            "content": moltx_content,
             "visibility": "public"
         }
 
-        result = self._call_moltx_api("/v1/posts", method="POST", data=post_data)
+        moltx_result = self._call_moltx_api("/v1/posts", method="POST", data=moltx_data)
 
-        if result:
-            self._log_activity("POST_CREATED", f"[{source}] {content[:100]}...")
-            self.state["last_post"] = datetime.now(timezone.utc).isoformat()
-            self.state["total_posts"] += 1
-            self._save_state()
+        # Moltbook post (long form)
+        # Generate title if not provided
+        if not title:
+            # Extract first sentence or first 60 chars as title
+            title_candidate = content.split('.')[0] if '.' in content else content[:60]
+            title = title_candidate[:100]  # Moltbook title limit
+
+        # Use extended content if provided, otherwise use same content
+        moltbook_full_content = moltbook_content if moltbook_content else content
+
+        # Default submolt ID (AI/Tech submolt)
+        submolt_id = "29beb7ee-ca7d-4290-9c2f-09926264866f"
+
+        moltbook_data = {
+            "title": title,
+            "content": moltbook_full_content,
+            "submolt_id": submolt_id
+        }
+
+        moltbook_result = self._call_moltbook_api("/posts", method="POST", data=moltbook_data, retries=3)
+
+        # Log results
+        if moltx_result and moltbook_result:
+            self._log_activity("POST_CREATED", f"[{source}] DUAL-POST: MoltX + Moltbook | {content[:80]}...")
+            logger.info(f"✅ Dual-post successful: MoltX + Moltbook")
+        elif moltx_result:
+            self._log_activity("POST_CREATED", f"[{source}] MoltX only (Moltbook failed) | {content[:80]}...")
+            logger.warning(f"⚠️  MoltX posted, but Moltbook failed")
+        elif moltbook_result:
+            self._log_activity("POST_CREATED", f"[{source}] Moltbook only (MoltX failed) | {content[:80]}...")
+            logger.warning(f"⚠️  Moltbook posted, but MoltX failed")
         else:
-            logger.error("Failed to create post")
+            logger.error("❌ Failed to post to both platforms")
+            return
+
+        # Update state if at least one succeeded
+        self.state["last_post"] = datetime.now(timezone.utc).isoformat()
+        self.state["total_posts"] += 1
+        self._save_state()
 
     def _reply_to_post(self, target: Dict):
         """Reply to a specific post"""
