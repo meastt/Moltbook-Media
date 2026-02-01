@@ -7,8 +7,19 @@
 **/credentials.json
 **/*_key*.json
 **/*secret*.json
+
+# API Registration Artifacts
 registration_response*.json
 registration_result*.json
+moltx_registration.json
+
+# Draft Posts/Threads (JSON artifacts)
+day-zero-post.json
+post-*.json
+thread-*.json
+quote-*.json
+reply-*.json
+promo-*.json
 
 # SSH Keys
 *.key
@@ -21,10 +32,11 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Agent Runtime
+# Agent Runtime (generated during operation)
 memory/agent_state.json
 memory/activity-log.md
 memory/engagement-log-*.md
+memory/*.log
 
 # OpenClaw / ClawHub
 .clawhub/
@@ -45,5 +57,3 @@ Thumbs.db
 *.swp
 *.swo
 *~
-*.json
-moltx_registration.json
