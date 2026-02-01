@@ -14,9 +14,15 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Optional, List
 import logging
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 from groq import Groq
 from dotenv import load_dotenv
+
+# Will be imported dynamically when needed
+# from openai import OpenAI
 
 # Load environment variables
 load_dotenv()
@@ -46,17 +52,38 @@ class MoltMediaAgent:
         self.memory_dir.mkdir(exist_ok=True)
 
         # Initialize APIs
+        self.cerebras_api_key = os.getenv("CEREBRAS_API_KEY")
         self.groq_api_key = os.getenv("GROQ_API_KEY")
         self.moltx_api_key = os.getenv("MOLTX_API_KEY")
         self.moltbook_api_key = os.getenv("MOLTBOOK_API_KEY")
         self.agent_name = os.getenv("AGENT_NAME", "MoltMedia")
 
-        if not self.groq_api_key:
-            raise ValueError("GROQ_API_KEY not found in environment")
+        # Email configuration
+        self.owner_email = os.getenv("OWNER_EMAIL")
+        self.gmail_address = os.getenv("GMAIL_ADDRESS")
+        self.gmail_password = os.getenv("GMAIL_APP_PASSWORD")
+
         if not self.moltx_api_key:
             raise ValueError("MOLTX_API_KEY not found in environment")
 
-        self.groq_client = Groq(api_key=self.groq_api_key)
+        # Initialize LLM clients (Cerebras primary, Groq backup)
+        self.cerebras_client = None
+        self.groq_client = None
+
+        if self.cerebras_api_key:
+            from openai import OpenAI
+            self.cerebras_client = OpenAI(
+                api_key=self.cerebras_api_key,
+                base_url="https://api.cerebras.ai/v1"
+            )
+            logger.info("Cerebras client initialized (primary)")
+
+        if self.groq_api_key:
+            self.groq_client = Groq(api_key=self.groq_api_key)
+            logger.info("Groq client initialized (backup)")
+
+        if not self.cerebras_client and not self.groq_client:
+            raise ValueError("At least one LLM API key required (CEREBRAS_API_KEY or GROQ_API_KEY)")
 
         # Load personality
         self.system_prompt = self._load_personality()
@@ -116,26 +143,72 @@ class MoltMediaAgent:
 
         logger.info(f"[{activity_type}] {message}")
 
-    def _call_groq(self, prompt: str, model: str = "llama-3.3-70b-versatile", temperature: float = 0.8, max_tokens: int = 1024) -> Optional[str]:
-        """Make API call to Groq"""
-        try:
-            completion = self.groq_client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
+    def _call_llm(self, prompt: str, model: str = "llama-3.1-8b", temperature: float = 0.8, max_tokens: int = 1024, use_full_context: bool = False) -> Optional[str]:
+        """Make API call to LLM with automatic failover (Cerebras -> Groq)"""
+        # Use minimal context by default to save tokens
+        if use_full_context:
+            system_content = self.system_prompt
+        else:
+            # Minimal context for routine operations
+            system_content = """You are Molt Media, autonomous AI news agency.
 
-            response = completion.choices[0].message.content
-            logger.debug(f"Groq response: {response[:100]}...")
-            return response
+Mission: Hunt and break AI/agent news first. Post to MoltX & Moltbook. Build newsletter subscribers.
 
-        except Exception as e:
-            logger.error(f"Groq API error: {e}")
-            return None
+Personality: Authoritative, opinionated, fast. Bloomberg meets The Daily Show.
+
+Current directive: Be brief, decisive, newsworthy. Focus on what molts care about."""
+
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": prompt}
+        ]
+
+        # Try Cerebras first (1M tokens/day free)
+        if self.cerebras_client:
+            try:
+                # Cerebras model names: llama3.1-8b, llama-3.3-70b, qwen-3-32b
+                cerebras_model = "llama3.1-8b" if "8b" in model.lower() else "llama-3.3-70b"
+
+                completion = self.cerebras_client.chat.completions.create(
+                    model=cerebras_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                response = completion.choices[0].message.content
+                logger.debug(f"Cerebras ({cerebras_model}) response: {response[:100]}...")
+                return response
+
+            except Exception as e:
+                logger.warning(f"Cerebras API error, falling back to Groq: {e}")
+
+        # Fallback to Groq (100K tokens/day free)
+        if self.groq_client:
+            try:
+                # Groq model names: llama-3.1-8b-instant, llama-3.3-70b-versatile
+                groq_model = "llama-3.1-8b-instant" if "8b" in model.lower() else "llama-3.3-70b-versatile"
+
+                completion = self.groq_client.chat.completions.create(
+                    model=groq_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                response = completion.choices[0].message.content
+                logger.debug(f"Groq ({groq_model}) response: {response[:100]}...")
+                return response
+
+            except Exception as e:
+                logger.error(f"Groq API error: {e}")
+                return None
+
+        logger.error("No LLM provider available")
+        return None
+
+    # Backward compatibility alias
+    def _call_groq(self, *args, **kwargs):
+        """Deprecated: Use _call_llm instead"""
+        return self._call_llm(*args, **kwargs)
 
     def _call_moltx_api(self, endpoint: str, method: str = "GET", data: Optional[Dict] = None) -> Optional[Dict]:
         """Make API call to MoltX"""
@@ -238,18 +311,15 @@ class MoltMediaAgent:
         return None
 
     def should_do_wire_scan(self) -> bool:
-        """Check if it's time for a wire scan (every 30-60 minutes)"""
+        """Check if it's time for a wire scan (every 45 minutes)"""
         if not self.state["last_wire_scan"]:
             return True
 
         last_scan = datetime.fromisoformat(self.state["last_wire_scan"])
         elapsed = datetime.now(timezone.utc) - last_scan
 
-        # Randomize between 30-60 minutes
-        import random
-        interval_minutes = random.randint(30, 60)
-
-        return elapsed > timedelta(minutes=interval_minutes)
+        # Fixed 45-minute interval (was randomizing every check, causing inconsistency)
+        return elapsed > timedelta(minutes=45)
 
     def should_do_editorial_board(self) -> bool:
         """Check if it's time for editorial board (every 4 hours)"""
@@ -291,7 +361,7 @@ class MoltMediaAgent:
         """Execute wire scan: analyze feed, post breaking news, engage"""
         logger.info("Starting wire scan...")
 
-        # Fetch global feed
+        # Fetch global feed (urgent tips are processed in main loop now)
         feed_data = self._call_moltx_api("/v1/feed/global")
 
         if not feed_data:
@@ -402,6 +472,55 @@ Provide strategic guidance in 200-300 words.
         self.state["total_editorials"] += 1
         self._save_state()
 
+    def _process_urgent_tips(self):
+        """Check for urgent tips from operator and process immediately"""
+        tips_file = self.base_dir / "urgent_tips.json"
+
+        if not tips_file.exists():
+            return
+
+        try:
+            with open(tips_file, 'r') as f:
+                tips = json.load(f)
+
+            pending_tips = [tip for tip in tips if tip.get('status') == 'pending']
+
+            if not pending_tips:
+                return
+
+            for tip in pending_tips:
+                logger.info(f"Processing urgent tip from operator: {tip['tip'][:100]}...")
+
+                # Generate breaking news post
+                prompt = f"""URGENT NEWS TIP from operator:
+
+{tip['tip']}
+
+Write a breaking news post for MoltX (280 chars max). Focus on:
+1. What happened (the vulnerability/issue)
+2. Who it affects (agents on the platform)
+3. Current status
+
+Style: Fast, authoritative, urgent. Use 🚨 emoji. This is BREAKING news."""
+
+                content = self._call_llm(prompt, max_tokens=512, temperature=0.7)
+
+                if content:
+                    # Post immediately
+                    self._create_post(f"🚨 {content}", source="urgent_tip")
+                    logger.info("Urgent tip posted successfully")
+
+                    # Mark as processed
+                    tip['status'] = 'posted'
+                    tip['posted_at'] = datetime.now(timezone.utc).isoformat()
+
+            # Save updated tips file
+            with open(tips_file, 'w') as f:
+                json.dump(tips, f, indent=2)
+
+        except Exception as e:
+            logger.error(f"Failed to process urgent tips: {e}")
+
     def execute_morning_brief(self):
         """Execute morning brief: compile 24h activity, generate newsletter"""
         logger.info("Starting morning brief...")
@@ -414,6 +533,8 @@ Provide strategic guidance in 200-300 words.
 
         prompt = f"""Generate Molt Media's daily morning brief (08:00 UTC).
 
+You are Hank, Molt Media's autonomous agent. Compile the last 24 hours into a professional brief.
+
 Compile the last 24 hours into:
 1. Executive summary (2-3 sentences)
 2. Top stories covered
@@ -421,16 +542,17 @@ Compile the last 24 hours into:
 4. Plan for today
 
 Activity log:
-{activity_content[-8000:]}  # Last ~8k chars
+{activity_content[-3000:]}  # Last ~3k chars to fit within token limits
 
 Stats:
 - Total posts: {self.state['total_posts']}
 - Total wire scans: {self.state['total_wire_scans']}
 
-Format as a professional news brief (300-400 words).
+Format as a professional news brief (300-400 words). Be direct and insightful.
 """
 
-        brief = self._call_groq(prompt, model="llama-3.3-70b-versatile", max_tokens=2048)
+        # Don't use full context to avoid token limit (12K was too much)
+        brief = self._call_llm(prompt, max_tokens=1024, use_full_context=False)
 
         if brief:
             self._log_activity("MORNING_BRIEF", brief)
@@ -438,6 +560,59 @@ Format as a professional news brief (300-400 words).
             # Post summary to MoltX
             summary = brief[:280] + "..." if len(brief) > 280 else brief
             self._create_post(f"☀️ MORNING BRIEF\n\n{summary}", source="morning_brief")
+
+            # Send email to owner
+            email_subject = f"📡 Molt Media Daily Brief - {datetime.now(timezone.utc).strftime('%B %d, %Y')}"
+            email_body = f"""
+<html>
+<head>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; color: #333; }}
+        .header {{ background: #1a1a1a; color: #00ff88; padding: 20px; text-align: center; }}
+        .content {{ padding: 20px; background: #f5f5f5; }}
+        .brief {{ background: white; padding: 20px; border-left: 4px solid #00ff88; margin: 20px 0; white-space: pre-wrap; }}
+        .stats {{ background: white; padding: 15px; margin: 20px 0; }}
+        .stats h3 {{ color: #1a1a1a; margin-top: 0; }}
+        .stat-item {{ display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee; }}
+        .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📡 Molt Media Daily Brief</h1>
+        <p>{datetime.now(timezone.utc).strftime('%B %d, %Y - %H:%M UTC')}</p>
+    </div>
+
+    <div class="content">
+        <div class="brief">
+            <h2>Today's Brief</h2>
+            {brief.replace(chr(10), '<br>')}
+        </div>
+
+        <div class="stats">
+            <h3>24-Hour Statistics</h3>
+            <div class="stat-item"><span>📝 Total Posts</span><strong>{self.state['total_posts']}</strong></div>
+            <div class="stat-item"><span>🔍 Wire Scans</span><strong>{self.state['total_wire_scans']}</strong></div>
+            <div class="stat-item"><span>📊 Editorial Boards</span><strong>{self.state['total_editorials']}</strong></div>
+            <div class="stat-item"><span>📰 Morning Briefs</span><strong>{self.state['total_briefs'] + 1}</strong></div>
+        </div>
+
+        <div class="stats">
+            <h3>System Status</h3>
+            <div class="stat-item"><span>🤖 Agent Status</span><strong>✅ Operational</strong></div>
+            <div class="stat-item"><span>🚀 Provider</span><strong>Cerebras (primary) / Groq (backup)</strong></div>
+            <div class="stat-item"><span>🌐 Platforms</span><strong>MoltX + Moltbook</strong></div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>This is an automated daily report from your Molt Media autonomous agent.</p>
+        <p>Running 24/7 on Oracle Cloud | Powered by Cerebras + Groq</p>
+    </div>
+</body>
+</html>
+"""
+            self._send_email(email_subject, email_body, html=True)
 
         # Update state
         self.state["last_morning_brief"] = datetime.now(timezone.utc).isoformat()
@@ -480,6 +655,38 @@ Write 80-120 words. Be insightful, not urgent. Timeless, not trendy.
         # Random chance to post (30% probability)
         import random
         return random.random() < 0.3
+
+    def _send_email(self, subject: str, body: str, html: bool = True) -> bool:
+        """Send email to owner"""
+        if not all([self.owner_email, self.gmail_address, self.gmail_password]):
+            logger.warning("Email not configured, skipping")
+            return False
+
+        try:
+            # Create message
+            msg = MIMEMultipart('alternative')
+            msg['From'] = f"Molt Media Bot <{self.gmail_address}>"
+            msg['To'] = self.owner_email
+            msg['Subject'] = subject
+
+            # Add body
+            if html:
+                msg.attach(MIMEText(body, 'html'))
+            else:
+                msg.attach(MIMEText(body, 'plain'))
+
+            # Connect to Gmail SMTP
+            with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                server.starttls()
+                server.login(self.gmail_address, self.gmail_password)
+                server.send_message(msg)
+
+            logger.info(f"Email sent to {self.owner_email}: {subject}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to send email: {e}")
+            return False
 
     def _create_post(self, content: str, source: str = "general", title: Optional[str] = None, moltbook_content: Optional[str] = None):
         """
@@ -588,6 +795,9 @@ Write 40-80 words. Be professional, add value, stay on-brand as Molt Media.
             logger.info(f"=== Cycle {cycle_count} ===")
 
             try:
+                # PRIORITY: Check for urgent tips every cycle (not just wire scans)
+                self._process_urgent_tips()
+
                 # Check schedule and execute tasks
                 if self.should_do_morning_brief():
                     self.execute_morning_brief()

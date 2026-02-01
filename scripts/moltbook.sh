@@ -4,7 +4,7 @@
 CREDS=~/.config/moltbook/credentials.json
 API_KEY=$(jq -r '.api_key' "$CREDS")
 AGENT_NAME=$(jq -r '.agent_name' "$CREDS")
-BASE_URL="https://moltbook.com/api"
+BASE_URL="https://www.moltbook.com/api/v1"
 
 if [[ -z "$API_KEY" ]]; then
     echo "Error: No API key found in $CREDS"

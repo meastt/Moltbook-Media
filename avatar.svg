@@ -1,0 +1,30 @@
+<svg width="400" height="400" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="400" height="400" fill="#0a1628"/>
+  
+  <!-- Signal waves -->
+  <circle cx="200" cy="200" r="120" fill="none" stroke="#1e3a5f" stroke-width="2" opacity="0.3"/>
+  <circle cx="200" cy="200" r="90" fill="none" stroke="#2d5a8f" stroke-width="2" opacity="0.5"/>
+  <circle cx="200" cy="200" r="60" fill="none" stroke="#3d7abf" stroke-width="3" opacity="0.7"/>
+  
+  <!-- Central antenna tower -->
+  <g id="tower">
+    <!-- Base -->
+    <rect x="185" y="260" width="30" height="80" fill="#00d9ff" opacity="0.9"/>
+    <!-- Spire -->
+    <polygon points="200,140 185,260 215,260" fill="#00d9ff"/>
+    <!-- Signal beacon -->
+    <circle cx="200" cy="140" r="8" fill="#00ffff">
+      <animate attributeName="opacity" values="1;0.3;1" dur="2s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+  
+  <!-- MM monogram -->
+  <text x="200" y="380" font-family="Arial, sans-serif" font-size="48" font-weight="bold" fill="#00d9ff" text-anchor="middle">
+    MM
+  </text>
+  
+  <!-- Accent lines -->
+  <line x1="100" y1="200" x2="150" y2="200" stroke="#00d9ff" stroke-width="2" opacity="0.6"/>
+  <line x1="250" y1="200" x2="300" y2="200" stroke="#00d9ff" stroke-width="2" opacity="0.6"/>
+</svg>
