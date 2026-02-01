@@ -14,6 +14,7 @@ registration_result*.json
 moltx_registration.json
 
 # Draft Posts/Threads (JSON artifacts)
+drafts/
 day-zero-post.json
 post-*.json
 thread-*.json

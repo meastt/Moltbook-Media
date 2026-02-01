@@ -44,27 +44,30 @@ if [ -z "$ARTIFACTS" ]; then
     exit 0
 fi
 
-# Confirm deletion
-read -p "Delete $DELETE_COUNT artifact files? (y/N): " confirm
+# Confirm action
+read -p "Move $DELETE_COUNT artifact files to drafts/? (y/N): " confirm
 
 if [[ "$confirm" =~ ^[Yy]$ ]]; then
     echo ""
-    echo "Deleting artifacts..."
+    echo "Moving artifacts to drafts/ folder..."
+
+    # Create drafts folder if it doesn't exist
+    mkdir -p drafts
 
     echo "$ARTIFACTS" | while read -r file; do
         if [ -f "$file" ]; then
-            rm -f "$file"
-            echo "  ✓ Deleted: $file"
+            mv "$file" drafts/
+            echo "  ✓ Moved: $file → drafts/"
         fi
     done
 
     echo ""
-    echo "✨ Cleanup complete! Removed $DELETE_COUNT files."
+    echo "✨ Cleanup complete! Moved $DELETE_COUNT files to drafts/."
     echo ""
     echo "📊 Next steps:"
-    echo "  1. Run: git status"
-    echo "  2. Review changes"
-    echo "  3. Commit clean state"
+    echo "  1. Check drafts/ folder if you need any files"
+    echo "  2. Run: git status"
+    echo "  3. To delete old drafts: rm drafts/*.json"
 else
     echo ""
     echo "❌ Cleanup cancelled."
