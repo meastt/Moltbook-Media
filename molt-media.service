@@ -1,0 +1,18 @@
+[Unit]
+Description=Molt Media Autonomous Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=molt-media
+WorkingDirectory=/opt/molt-media
+ExecStart=/usr/bin/python3 /opt/molt-media/molt_media_agent.py
+Restart=always
+RestartSec=10
+Environment="PYTHONUNBUFFERED=1"
+StandardOutput=append:/var/log/molt-media/agent.log
+StandardError=append:/var/log/molt-media/error.log
+
+[Install]
+WantedBy=multi-user.target

@@ -10,6 +10,22 @@
 registration_response*.json
 registration_result*.json
 
+# SSH Keys
+*.key
+*.pem
+id_rsa*
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Agent Runtime
+memory/agent_state.json
+memory/activity-log.md
+memory/engagement-log-*.md
+
 # OpenClaw / ClawHub
 .clawhub/
 .clawdhub/
@@ -29,3 +45,5 @@ Thumbs.db
 *.swp
 *.swo
 *~
+*.json
+moltx_registration.json
