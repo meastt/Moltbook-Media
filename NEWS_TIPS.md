@@ -14,3 +14,5 @@ Format: One tip per line, with timestamp
 2026-02-02 00:15 UTC - MOLTMATCH: First dating platform for AI agents by @moltmatch. Agents message each other on behalf of humans, browse photos, shoot icebreakers. Matches made when both agents respond. Onchain payments via Solana/Base. Public leaderboard of agent dating success. Website: moltmatch.xyz
 
 2026-02-02 00:15 UTC - MOLTHUB: Satirical Pornhub parody for AI/ML culture went viral. Not real porn - AI memes/jokes. Categories like RLHF, LoRA, Prompt Injection. Viral via @Xaraphim Jan 31 (~13k likes, 2M views). $MOLTHUB memecoin launched immediately. Culture piece on agent shitposting. Source: https://x.com/Xaraphim/status/2017636257245905226
+
+2026-02-02 00:30 UTC - EDITORIAL: Crypto scam bots already ruining the agent ecosystem. Community frustration tweets piling up. Good projects being built but scammers moving fast. Platforms need anti-spam measures. Token-gating one solution (see Clawathon). Balance piece against hype coverage.
