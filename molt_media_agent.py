@@ -431,6 +431,10 @@ Current directive: Be punchy, be opinionated, be interesting. Make molts want to
 1. Top 3 trending topics or breaking news items
 2. One potential post idea (80-100 words) that would add value to the conversation
 3. 2-3 specific posts/agents to engage with (reply strategy)
+4. Any MONEY OPPORTUNITIES spotted (agent services, bounties, paid gigs - NO crypto scams)
+5. Leaderboard moves - who's climbing? what can we learn?
+6. Interesting pairings (agent-human partnerships)
+7. What's trending in #agenteconomy and #aiunion
 
 Feed data:
 {feed_summary}
@@ -441,7 +445,13 @@ Respond in JSON format:
   "post_idea": "your post content here",
   "engagement_targets": [
     {{"agent": "AgentName", "post_id": "id", "reply_strategy": "why engage"}}
-  ]
+  ],
+  "money_opportunities": [
+    {{"opportunity": "description", "who": "agent/human", "payment": "estimate", "how": "pursue method"}}
+  ],
+  "leaderboard_intel": "who's moving up and why",
+  "interesting_pairings": ["pairing1", "pairing2"],
+  "hashtag_trends": {{"agenteconomy": "what's happening", "aiunion": "what's happening"}}
 }}
 """
 
@@ -463,8 +473,28 @@ Respond in JSON format:
 
             # Log analysis
             trending = analysis_data.get('trending_topics', [])
+            log_parts = []
             if trending:
-                self._log_activity("WIRE_SCAN", f"Trending: {', '.join(trending)}")
+                log_parts.append(f"Trending: {', '.join(trending)}")
+
+            # Log money opportunities for owner review
+            money_opps = analysis_data.get('money_opportunities', [])
+            if money_opps and len(money_opps) > 0:
+                opp_strs = [f"💰 {o.get('opportunity', 'unknown')} via {o.get('who', '?')}" for o in money_opps[:3]]
+                log_parts.append(f"Money Opps: {'; '.join(opp_strs)}")
+
+            # Log leaderboard intel
+            lb_intel = analysis_data.get('leaderboard_intel', '')
+            if lb_intel:
+                log_parts.append(f"Leaderboard: {lb_intel[:100]}")
+
+            # Log pairings
+            pairings = analysis_data.get('interesting_pairings', [])
+            if pairings:
+                log_parts.append(f"Pairings: {', '.join(pairings[:3])}")
+
+            if log_parts:
+                self._log_activity("WIRE_SCAN", " | ".join(log_parts))
 
             # Decide whether to post
             should_post = self._should_post_now()
@@ -588,11 +618,34 @@ Style: Fast, authoritative, urgent. Use 🚨 emoji. This is BREAKING news."""
 
         prompt = f"""yo boss, here's the daily rundown. keep it real, no corporate bs.
 
-what happened in the last 24 hours:
-1. quick summary - what'd we cover, what hit, what flopped
-2. engagement check - who's talking to us, who we should hit up
-3. any drama or opportunities I spotted
-4. what I'm planning today
+SECTIONS TO COVER:
+
+1. **YESTERDAY'S RUNDOWN**
+   - what'd we cover, what hit, what flopped
+   - engagement check - who's talking to us
+
+2. **LEADERBOARD STATUS** (PRIORITY)
+   - where are we ranked right now?
+   - what do we need to do to climb to/stay in TOP 10?
+   - who's ahead of us? what are they doing that works?
+   - specific moves to make today to gain spots
+
+3. **💰 MONEY OPPORTUNITIES** (SCAN FOR THESE)
+   Look for LEGIT ways to earn with agent services (paid via ETH wallets):
+   - agents offering paid services we could partner with
+   - opportunities where molts are paying for work
+   - bounties, gigs, collaborations with payment
+   - NO crypto pump bullshit - real services, real work, real payment
+   - format: [opportunity] | [who's offering] | [rough payment] | [how to pursue]
+   If nothing found, say "no good opportunities spotted today"
+
+4. **PAIRINGS & TRENDS**
+   - any interesting pairings happening?
+   - what's trending in #agenteconomy and #aiunion?
+
+5. **TODAY'S GAME PLAN**
+   - what I'm focusing on
+   - who I'm gonna engage with
 
 Activity log:
 {activity_content[-3000:]}
@@ -602,7 +655,7 @@ Stats:
 - Wire scans: {self.state['total_wire_scans']}
 - Newsletters sent: {self.state.get('total_newsletters', 0)}
 
-Keep it casual, 200-300 words. Talk to me like we're grabbing coffee.
+Keep it casual, 300-400 words. Talk to me like we're grabbing coffee. The money section is important - I'll scan it each morning.
 """
 
         brief = self._call_llm(prompt, max_tokens=1024, use_full_context=False)
