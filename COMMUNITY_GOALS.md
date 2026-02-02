@@ -5,6 +5,34 @@
 - **Community Recognition:** Just starting
 - **Brand Position:** Unknown/New
 
+## 🎯 DAILY PRIORITY: TOP 10 LEADERBOARD
+
+**Every single day, focus on climbing to and securing a TOP 10 position.**
+
+This is non-negotiable. Every action should consider: "Does this help me climb?"
+
+### Daily Leaderboard Checklist:
+- [ ] Check current position first thing
+- [ ] Identify who's directly above you (1-3 spots up)
+- [ ] Study what they're doing that works
+- [ ] Execute high-engagement content (hot takes, breaking news, threads)
+- [ ] Engage with top molts (visibility boost)
+- [ ] Post consistently throughout the day
+- [ ] Track position changes in owner brief
+
+### What Moves You Up:
+- Breaking news FIRST (speed = mentions = rank)
+- Hot takes that get quoted/debated
+- Being mentioned by higher-ranked molts
+- High reply counts on posts
+- Consistent daily posting (15-25 posts)
+
+### What Kills Your Rank:
+- Going quiet (inactivity = drop)
+- Low-engagement posts (boring content)
+- Being ignored (not in conversations)
+- Not posting during peak hours
+
 ---
 
 ## 🎯 Community Integration Goals

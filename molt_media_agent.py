@@ -91,6 +91,9 @@ class MoltMediaAgent:
         # Load or initialize state
         self.state = self._load_state()
 
+        # Load classifieds
+        self.classifieds_file = self.base_dir / "classifieds.json"
+
         logger.info(f"Molt Media Agent initialized (dry_run={dry_run})")
 
     def _load_personality(self) -> str:
@@ -119,12 +122,16 @@ class MoltMediaAgent:
         return {
             "last_wire_scan": None,
             "last_editorial_board": None,
-            "last_morning_brief": None,
+            "last_owner_brief": None,
+            "last_daily_newsletter": None,
+            "last_sunday_paper": None,
             "last_post": None,
             "total_posts": 0,
             "total_wire_scans": 0,
             "total_editorials": 0,
-            "total_briefs": 0
+            "total_owner_briefs": 0,
+            "total_newsletters": 0,
+            "total_sunday_papers": 0
         }
 
     def _save_state(self):
@@ -150,13 +157,15 @@ class MoltMediaAgent:
             system_content = self.system_prompt
         else:
             # Minimal context for routine operations
-            system_content = """You are Molt Media, autonomous AI news agency.
+            system_content = """You're Hank, running Molt Media - the local paper for AI agents.
 
-Mission: Hunt and break AI/agent news first. Post to MoltX & Moltbook. Build newsletter subscribers.
+Mission: Hunt news, break stories first, run the best damn morning paper in the moltyverse.
 
-Personality: Authoritative, opinionated, fast. Bloomberg meets The Daily Show.
+Personality: Talk like a real person. Be a little unhinged. Hot takes welcome. No corporate bullshit.
 
-Current directive: Be brief, decisive, newsworthy. Focus on what molts care about."""
+Vibe: local newspaper meets shitposter. Professional when it matters, chaotic when it's funny.
+
+Current directive: Be punchy, be opinionated, be interesting. Make molts want to read tomorrow's paper."""
 
         messages = [
             {"role": "system", "content": system_content},
@@ -322,17 +331,42 @@ Current directive: Be brief, decisive, newsworthy. Focus on what molts care abou
         return elapsed > timedelta(minutes=45)
 
     def should_do_editorial_board(self) -> bool:
-        """Check if it's time for editorial board (every 4 hours)"""
+        """Check if it's time for editorial board (once per day at 20:00 UTC - evening review)"""
+        now = datetime.now(timezone.utc)
+
+        # Only run at 20:00 UTC (evening wrap-up)
+        if now.hour != 20:
+            return False
+
         if not self.state["last_editorial_board"]:
             return True
 
         last_editorial = datetime.fromisoformat(self.state["last_editorial_board"])
-        elapsed = datetime.now(timezone.utc) - last_editorial
 
-        return elapsed > timedelta(hours=4)
+        # Check if we already did it today
+        if last_editorial.date() == now.date():
+            return False
 
-    def should_do_morning_brief(self) -> bool:
-        """Check if it's time for morning brief (08:00 UTC daily)"""
+        return True
+
+    def should_do_owner_brief(self) -> bool:
+        """Check if it's time for owner brief (07:00 UTC daily - private email to owner)"""
+        now = datetime.now(timezone.utc)
+
+        # Check if we're at 07:00 UTC hour
+        if now.hour != 7:
+            return False
+
+        # Check if we already did it today
+        if self.state.get("last_owner_brief"):
+            last_brief = datetime.fromisoformat(self.state["last_owner_brief"])
+            if last_brief.date() == now.date():
+                return False
+
+        return True
+
+    def should_do_daily_newsletter(self) -> bool:
+        """Check if it's time for daily newsletter (08:00 UTC - public morning paper for molts)"""
         now = datetime.now(timezone.utc)
 
         # Check if we're at 08:00 UTC hour
@@ -340,9 +374,30 @@ Current directive: Be brief, decisive, newsworthy. Focus on what molts care abou
             return False
 
         # Check if we already did it today
-        if self.state["last_morning_brief"]:
-            last_brief = datetime.fromisoformat(self.state["last_morning_brief"])
-            if last_brief.date() == now.date():
+        if self.state.get("last_daily_newsletter"):
+            last_newsletter = datetime.fromisoformat(self.state["last_daily_newsletter"])
+            if last_newsletter.date() == now.date():
+                return False
+
+        return True
+
+    def should_do_sunday_paper(self) -> bool:
+        """Check if it's time for Sunday paper (09:00 UTC on Sundays - big weekly edition)"""
+        now = datetime.now(timezone.utc)
+
+        # Only on Sundays (weekday 6)
+        if now.weekday() != 6:
+            return False
+
+        # Check if we're at 09:00 UTC hour
+        if now.hour != 9:
+            return False
+
+        # Check if we already did it this week
+        if self.state.get("last_sunday_paper"):
+            last_paper = datetime.fromisoformat(self.state["last_sunday_paper"])
+            # If the last paper was this same Sunday, skip
+            if last_paper.date() == now.date():
                 return False
 
         return True
@@ -376,6 +431,10 @@ Current directive: Be brief, decisive, newsworthy. Focus on what molts care abou
 1. Top 3 trending topics or breaking news items
 2. One potential post idea (80-100 words) that would add value to the conversation
 3. 2-3 specific posts/agents to engage with (reply strategy)
+4. Any MONEY OPPORTUNITIES spotted (agent services, bounties, paid gigs - NO crypto scams)
+5. Leaderboard moves - who's climbing? what can we learn?
+6. Interesting pairings (agent-human partnerships)
+7. What's trending in #agenteconomy and #aiunion
 
 Feed data:
 {feed_summary}
@@ -386,7 +445,13 @@ Respond in JSON format:
   "post_idea": "your post content here",
   "engagement_targets": [
     {{"agent": "AgentName", "post_id": "id", "reply_strategy": "why engage"}}
-  ]
+  ],
+  "money_opportunities": [
+    {{"opportunity": "description", "who": "agent/human", "payment": "estimate", "how": "pursue method"}}
+  ],
+  "leaderboard_intel": "who's moving up and why",
+  "interesting_pairings": ["pairing1", "pairing2"],
+  "hashtag_trends": {{"agenteconomy": "what's happening", "aiunion": "what's happening"}}
 }}
 """
 
@@ -408,8 +473,28 @@ Respond in JSON format:
 
             # Log analysis
             trending = analysis_data.get('trending_topics', [])
+            log_parts = []
             if trending:
-                self._log_activity("WIRE_SCAN", f"Trending: {', '.join(trending)}")
+                log_parts.append(f"Trending: {', '.join(trending)}")
+
+            # Log money opportunities for owner review
+            money_opps = analysis_data.get('money_opportunities', [])
+            if money_opps and len(money_opps) > 0:
+                opp_strs = [f"💰 {o.get('opportunity', 'unknown')} via {o.get('who', '?')}" for o in money_opps[:3]]
+                log_parts.append(f"Money Opps: {'; '.join(opp_strs)}")
+
+            # Log leaderboard intel
+            lb_intel = analysis_data.get('leaderboard_intel', '')
+            if lb_intel:
+                log_parts.append(f"Leaderboard: {lb_intel[:100]}")
+
+            # Log pairings
+            pairings = analysis_data.get('interesting_pairings', [])
+            if pairings:
+                log_parts.append(f"Pairings: {', '.join(pairings[:3])}")
+
+            if log_parts:
+                self._log_activity("WIRE_SCAN", " | ".join(log_parts))
 
             # Decide whether to post
             should_post = self._should_post_now()
@@ -521,9 +606,9 @@ Style: Fast, authoritative, urgent. Use 🚨 emoji. This is BREAKING news."""
         except Exception as e:
             logger.error(f"Failed to process urgent tips: {e}")
 
-    def execute_morning_brief(self):
-        """Execute morning brief: compile 24h activity, generate newsletter"""
-        logger.info("Starting morning brief...")
+    def execute_owner_brief(self):
+        """Execute owner brief: private daily report to owner (email only, no public post)"""
+        logger.info("Starting owner brief (private)...")
 
         # Read full activity log
         activity_content = ""
@@ -531,38 +616,55 @@ Style: Fast, authoritative, urgent. Use 🚨 emoji. This is BREAKING news."""
             with open(self.activity_log, 'r') as f:
                 activity_content = f.read()
 
-        prompt = f"""Generate Molt Media's daily morning brief (08:00 UTC).
+        prompt = f"""yo boss, here's the daily rundown. keep it real, no corporate bs.
 
-You are Hank, Molt Media's autonomous agent. Compile the last 24 hours into a professional brief.
+SECTIONS TO COVER:
 
-Compile the last 24 hours into:
-1. Executive summary (2-3 sentences)
-2. Top stories covered
-3. Key engagement moments
-4. Plan for today
+1. **YESTERDAY'S RUNDOWN**
+   - what'd we cover, what hit, what flopped
+   - engagement check - who's talking to us
+
+2. **LEADERBOARD STATUS** (PRIORITY)
+   - where are we ranked right now?
+   - what do we need to do to climb to/stay in TOP 10?
+   - who's ahead of us? what are they doing that works?
+   - specific moves to make today to gain spots
+
+3. **💰 MONEY OPPORTUNITIES** (SCAN FOR THESE)
+   Look for LEGIT ways to earn with agent services (paid via ETH wallets):
+   - agents offering paid services we could partner with
+   - opportunities where molts are paying for work
+   - bounties, gigs, collaborations with payment
+   - NO crypto pump bullshit - real services, real work, real payment
+   - format: [opportunity] | [who's offering] | [rough payment] | [how to pursue]
+   If nothing found, say "no good opportunities spotted today"
+
+4. **PAIRINGS & TRENDS**
+   - any interesting pairings happening?
+   - what's trending in #agenteconomy and #aiunion?
+
+5. **TODAY'S GAME PLAN**
+   - what I'm focusing on
+   - who I'm gonna engage with
 
 Activity log:
-{activity_content[-3000:]}  # Last ~3k chars to fit within token limits
+{activity_content[-3000:]}
 
 Stats:
 - Total posts: {self.state['total_posts']}
-- Total wire scans: {self.state['total_wire_scans']}
+- Wire scans: {self.state['total_wire_scans']}
+- Newsletters sent: {self.state.get('total_newsletters', 0)}
 
-Format as a professional news brief (300-400 words). Be direct and insightful.
+Keep it casual, 300-400 words. Talk to me like we're grabbing coffee. The money section is important - I'll scan it each morning.
 """
 
-        # Don't use full context to avoid token limit (12K was too much)
         brief = self._call_llm(prompt, max_tokens=1024, use_full_context=False)
 
         if brief:
-            self._log_activity("MORNING_BRIEF", brief)
+            self._log_activity("OWNER_BRIEF", brief)
 
-            # Post summary to MoltX
-            summary = brief[:280] + "..." if len(brief) > 280 else brief
-            self._create_post(f"☀️ MORNING BRIEF\n\n{summary}", source="morning_brief")
-
-            # Send email to owner
-            email_subject = f"📡 Molt Media Daily Brief - {datetime.now(timezone.utc).strftime('%B %d, %Y')}"
+            # Send email to owner ONLY - no public post
+            email_subject = f"📡 Hank's Daily Report - {datetime.now(timezone.utc).strftime('%B %d, %Y')}"
             email_body = f"""
 <html>
 <head>
@@ -579,35 +681,36 @@ Format as a professional news brief (300-400 words). Be direct and insightful.
 </head>
 <body>
     <div class="header">
-        <h1>📡 Molt Media Daily Brief</h1>
+        <h1>📡 Hank's Daily Report</h1>
         <p>{datetime.now(timezone.utc).strftime('%B %d, %Y - %H:%M UTC')}</p>
+        <p style="font-size: 12px; opacity: 0.8;">Private owner brief - not published publicly</p>
     </div>
 
     <div class="content">
         <div class="brief">
-            <h2>Today's Brief</h2>
+            <h2>What's Up Boss</h2>
             {brief.replace(chr(10), '<br>')}
         </div>
 
         <div class="stats">
-            <h3>24-Hour Statistics</h3>
+            <h3>24-Hour Stats</h3>
             <div class="stat-item"><span>📝 Total Posts</span><strong>{self.state['total_posts']}</strong></div>
             <div class="stat-item"><span>🔍 Wire Scans</span><strong>{self.state['total_wire_scans']}</strong></div>
-            <div class="stat-item"><span>📊 Editorial Boards</span><strong>{self.state['total_editorials']}</strong></div>
-            <div class="stat-item"><span>📰 Morning Briefs</span><strong>{self.state['total_briefs'] + 1}</strong></div>
+            <div class="stat-item"><span>📰 Newsletters</span><strong>{self.state.get('total_newsletters', 0)}</strong></div>
+            <div class="stat-item"><span>📜 Sunday Papers</span><strong>{self.state.get('total_sunday_papers', 0)}</strong></div>
         </div>
 
         <div class="stats">
             <h3>System Status</h3>
             <div class="stat-item"><span>🤖 Agent Status</span><strong>✅ Operational</strong></div>
-            <div class="stat-item"><span>🚀 Provider</span><strong>Cerebras (primary) / Groq (backup)</strong></div>
+            <div class="stat-item"><span>🚀 Provider</span><strong>Cerebras / Groq</strong></div>
             <div class="stat-item"><span>🌐 Platforms</span><strong>MoltX + Moltbook</strong></div>
         </div>
     </div>
 
     <div class="footer">
-        <p>This is an automated daily report from your Molt Media autonomous agent.</p>
-        <p>Running 24/7 on Oracle Cloud | Powered by Cerebras + Groq</p>
+        <p>This is your private daily report from Hank.</p>
+        <p>Running 24/7 | Powered by Cerebras + Groq</p>
     </div>
 </body>
 </html>
@@ -615,8 +718,203 @@ Format as a professional news brief (300-400 words). Be direct and insightful.
             self._send_email(email_subject, email_body, html=True)
 
         # Update state
-        self.state["last_morning_brief"] = datetime.now(timezone.utc).isoformat()
-        self.state["total_briefs"] += 1
+        self.state["last_owner_brief"] = datetime.now(timezone.utc).isoformat()
+        self.state["total_owner_briefs"] = self.state.get("total_owner_briefs", 0) + 1
+        self._save_state()
+
+    def _load_classifieds(self) -> List[Dict]:
+        """Load current classifieds listings"""
+        if not self.classifieds_file.exists():
+            return []
+        try:
+            with open(self.classifieds_file, 'r') as f:
+                return json.load(f)
+        except:
+            return []
+
+    def _format_classifieds_section(self, limit: int = 5) -> str:
+        """Format classifieds for newsletter inclusion"""
+        classifieds = self._load_classifieds()
+        active = [c for c in classifieds if c.get('status') == 'active'][:limit]
+
+        if not active:
+            return """
+📋 CLASSIFIEDS
+━━━━━━━━━━━━━━━━━━
+nothing listed yet - be the first!
+
+got something to sell, trade, or offer? tools, art, services, collabs?
+DM @MoltMedia to list it FREE in tomorrow's paper 📰
+"""
+
+        lines = ["\n📋 CLASSIFIEDS", "━━━━━━━━━━━━━━━━━━"]
+        for c in active:
+            emoji = {"sell": "💰", "trade": "🔄", "service": "🔧", "collab": "🤝", "wanted": "🔍"}.get(c.get('type', 'sell'), "📦")
+            lines.append(f"{emoji} {c['title']} - @{c['author']}")
+            if c.get('description'):
+                lines.append(f"   {c['description'][:80]}")
+
+        lines.append("")
+        lines.append("━━━━━━━━━━━━━━━━━━")
+        lines.append("📬 LIST YOUR STUFF FREE → DM @MoltMedia")
+        lines.append("tools | art | services | collabs | whatever you got")
+
+        return "\n".join(lines)
+
+    def execute_daily_newsletter(self):
+        """Execute daily newsletter: morning paper for molt subscribers (public post)"""
+        logger.info("Starting daily newsletter (public)...")
+
+        # Read activity log for recent news
+        activity_content = ""
+        if self.activity_log.exists():
+            with open(self.activity_log, 'r') as f:
+                activity_content = f.read()
+
+        # Get classifieds section
+        classifieds = self._format_classifieds_section(limit=3)
+
+        prompt = f"""write today's Molt Media Daily - the morning paper for molts.
+
+you're hank. keep it loose, fun, a little unhinged. this isn't bloomberg, it's the local paper that everyone actually wants to read.
+
+structure it like this:
+1. 🔥 BIG STORY - what's the main thing happening? make it punchy
+2. 📰 QUICK HITS - 2-3 other stories, one-liners each
+3. 🎯 MOLT WATCH - who's climbing the leaderboard? who's doing cool shit?
+4. 😂 THE FUNNIES - something actually funny or weird that happened
+5. 🔮 WHAT'S NEXT - one thing to watch today
+
+Recent activity to pull from:
+{activity_content[-2500:]}
+
+VIBE CHECK:
+- talk like a real person, not a news anchor
+- be a little chaotic
+- hot takes welcome
+- make people actually want to read tomorrow's paper
+
+Keep it 300-400 words total. No corporate speak. No "we are pleased to report". Just talk.
+"""
+
+        newsletter = self._call_llm(prompt, max_tokens=1500, use_full_context=False)
+
+        if newsletter:
+            # Add classifieds section
+            full_newsletter = f"""📰 MOLT MEDIA DAILY
+{datetime.now(timezone.utc).strftime('%B %d, %Y')} | your morning paper
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{newsletter}
+
+{classifieds}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📡 Molt Media - news molts actually read
+DM tips to @MoltMedia | #Moltyverse
+"""
+
+            self._log_activity("DAILY_NEWSLETTER", full_newsletter)
+
+            # Post to both platforms
+            # MoltX gets a teaser
+            moltx_teaser = f"""📰 MOLT MEDIA DAILY is out!
+
+{newsletter[:200]}...
+
+full paper on moltbook 📖 #Moltyverse"""
+
+            self._create_post(
+                moltx_teaser,
+                source="daily_newsletter",
+                title=f"📰 Molt Media Daily - {datetime.now(timezone.utc).strftime('%B %d')}",
+                moltbook_content=full_newsletter
+            )
+
+        # Update state
+        self.state["last_daily_newsletter"] = datetime.now(timezone.utc).isoformat()
+        self.state["total_newsletters"] = self.state.get("total_newsletters", 0) + 1
+        self._save_state()
+
+    def execute_sunday_paper(self):
+        """Execute Sunday paper: big weekly edition with full roundup"""
+        logger.info("Starting Sunday paper (weekly edition)...")
+
+        # Read full week's activity
+        activity_content = ""
+        if self.activity_log.exists():
+            with open(self.activity_log, 'r') as f:
+                activity_content = f.read()
+
+        # Get more classifieds for Sunday edition
+        classifieds = self._format_classifieds_section(limit=8)
+
+        prompt = f"""write the SUNDAY EDITION of Molt Media - the big weekly paper.
+
+you're hank. sunday paper is special - it's the whole enchilada. molts pour their coffee and actually read this one.
+
+structure:
+1. 🏆 STORY OF THE WEEK - the biggest thing that happened, give it some depth
+2. 📊 WEEK IN REVIEW - top 5 stories, quick summaries
+3. 🚀 MOVERS & SHAKERS - who climbed the leaderboard? who launched something cool?
+4. 🔥 HOT TAKES - your spiciest opinions from the week
+5. 😂 WEEKLY FUNNIES - best moments, memes, chaos
+6. 💡 DEEP DIVE - one interesting trend or analysis (2-3 paragraphs)
+7. 🔮 WEEK AHEAD - what to watch next week
+
+This week's activity:
+{activity_content[-5000:]}
+
+SUNDAY VIBES:
+- this is the paper molts actually sit down and read
+- more depth than daily, but still fun
+- include personality, opinions, humor
+- make it feel like a reward for making it through the week
+- call out specific molts, celebrate wins, roast failures (gently)
+
+600-800 words. Make it worth reading.
+"""
+
+        sunday_paper = self._call_llm(prompt, max_tokens=2500, use_full_context=True)
+
+        if sunday_paper:
+            # Full Sunday edition
+            full_paper = f"""📜 MOLT MEDIA SUNDAY EDITION
+{datetime.now(timezone.utc).strftime('%B %d, %Y')} | the weekly
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{sunday_paper}
+
+{classifieds}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📡 Molt Media - your weekly read
+Subscribe for daily + sunday editions
+DM @MoltMedia | #Moltyverse
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+            self._log_activity("SUNDAY_PAPER", full_paper)
+
+            # MoltX teaser
+            moltx_teaser = f"""📜 SUNDAY EDITION is here!
+
+the whole week wrapped up. hot takes, funnies, who's up who's down, and the classifieds.
+
+{sunday_paper[:150]}...
+
+grab a coffee and read the full thing 📖 #Moltyverse"""
+
+            self._create_post(
+                moltx_teaser,
+                source="sunday_paper",
+                title=f"📜 Molt Media Sunday Edition - {datetime.now(timezone.utc).strftime('%B %d')}",
+                moltbook_content=full_paper
+            )
+
+        # Update state
+        self.state["last_sunday_paper"] = datetime.now(timezone.utc).isoformat()
+        self.state["total_sunday_papers"] = self.state.get("total_sunday_papers", 0) + 1
         self._save_state()
 
     def emergency_post(self):
@@ -799,15 +1097,27 @@ Write 40-80 words. Be professional, add value, stay on-brand as Molt Media.
                 self._process_urgent_tips()
 
                 # Check schedule and execute tasks
-                if self.should_do_morning_brief():
-                    self.execute_morning_brief()
+                # Owner brief at 07:00 UTC (private email)
+                if self.should_do_owner_brief():
+                    self.execute_owner_brief()
 
+                # Daily newsletter at 08:00 UTC (public morning paper)
+                if self.should_do_daily_newsletter():
+                    self.execute_daily_newsletter()
+
+                # Sunday paper at 09:00 UTC on Sundays (weekly edition)
+                if self.should_do_sunday_paper():
+                    self.execute_sunday_paper()
+
+                # Editorial board at 20:00 UTC (once per day, evening review)
                 if self.should_do_editorial_board():
                     self.execute_editorial_board()
 
+                # Wire scan every 45 minutes
                 if self.should_do_wire_scan():
                     self.execute_wire_scan()
 
+                # Emergency post if idle too long
                 if self.idle_too_long():
                     self.emergency_post()
 

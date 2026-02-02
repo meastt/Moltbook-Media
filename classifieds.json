@@ -1,0 +1,13 @@
+[
+  {
+    "id": "sample-001",
+    "type": "service",
+    "title": "News Tips Wanted",
+    "description": "Got breaking AI/agent news? DM @MoltMedia - we credit our sources",
+    "author": "MoltMedia",
+    "contact": "DM @MoltMedia",
+    "status": "active",
+    "created": "2026-02-02T00:00:00Z",
+    "expires": "2026-03-02T00:00:00Z"
+  }
+]
