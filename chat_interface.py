@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
 Simple web-based chat interface for Molt Media agent
-Uses Groq API directly, bypassing OpenClaw complexity
+Uses Claude Haiku 4.5 via Anthropic API
 """
 
 import os
 import json
 from pathlib import Path
 from flask import Flask, render_template_string, request, jsonify
-from groq import Groq
-from openai import OpenAI
+import anthropic
 from dotenv import load_dotenv
 import datetime
 
@@ -18,23 +17,12 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Initialize LLM clients (Cerebras primary, Groq backup)
-cerebras_client = None
-groq_client = None
+# Initialize Anthropic client (Claude Haiku 4.5)
+if not os.getenv("ANTHROPIC_API_KEY"):
+    raise ValueError("ANTHROPIC_API_KEY not found in environment")
 
-if os.getenv("CEREBRAS_API_KEY"):
-    cerebras_client = OpenAI(
-        api_key=os.getenv("CEREBRAS_API_KEY"),
-        base_url="https://api.cerebras.ai/v1"
-    )
-    print("✅ Cerebras client initialized (primary)")
-
-if os.getenv("GROQ_API_KEY"):
-    groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-    print("✅ Groq client initialized (backup)")
-
-if not cerebras_client and not groq_client:
-    raise ValueError("At least one LLM API key required (CEREBRAS_API_KEY or GROQ_API_KEY)")
+anthropic_client = anthropic.Anthropic()  # Uses ANTHROPIC_API_KEY env var
+print("✅ Anthropic client initialized (Claude Haiku 4.5)")
 
 # Load personality (minimal for chat)
 def load_personality():
@@ -86,7 +74,7 @@ When your operator:
 See GOALS.md and COMMUNITY_GOALS.md for full details.
 
 ## Current Status
-- Providers: Cerebras (primary), Groq (backup)
+- Provider: Claude Haiku 4.5 (Anthropic)
 - Running autonomously on Oracle Cloud
 - Newsletter Subscribers: 0 → Target 100 (Month 1)
 - Leaderboard: #38 → Climbing to Top 20
@@ -290,7 +278,7 @@ HTML_TEMPLATE = """
             <span>📡</span>
             Molt Media Chat
         </h1>
-        <div class="status online">● Connected (Cerebras + Groq)</div>
+        <div class="status online">● Connected (Claude Haiku 4.5)</div>
     </header>
 
     <div id="chat-container"></div>
@@ -429,61 +417,39 @@ I'm saving this as an urgent tip that will be processed in my next cycle."
 DO NOT draft the full post in chat. DO NOT write breaking news content here. Just acknowledge and confirm.
 """
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message}
-        ]
+        # Call Claude Haiku 4.5
+        try:
+            response = anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}]
+            )
+            response_text = response.content[0].text
 
-        # Try Cerebras first (1M tokens/day free)
-        if cerebras_client:
-            try:
-                completion = cerebras_client.chat.completions.create(
-                    model="llama3.1-8b",
-                    messages=messages,
-                    temperature=0.7,
-                    max_tokens=1024
-                )
-                response = completion.choices[0].message.content
+            # If this was a news tip, save it to urgent_tips.json
+            if is_news_tip:
+                try:
+                    tips_file = Path(__file__).parent / 'urgent_tips.json'
+                    tips = []
+                    if tips_file.exists():
+                        with open(tips_file, 'r') as f:
+                            tips = json.load(f)
 
-                # If this was a news tip, save it to urgent_tips.json
-                if is_news_tip:
-                    try:
-                        tips_file = Path(__file__).parent / 'urgent_tips.json'
-                        tips = []
-                        if tips_file.exists():
-                            with open(tips_file, 'r') as f:
-                                tips = json.load(f)
+                    tips.append({
+                        'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        'tip': user_message,
+                        'status': 'pending'
+                    })
 
-                        tips.append({
-                            'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                            'tip': user_message,
-                            'status': 'pending'
-                        })
+                    with open(tips_file, 'w') as f:
+                        json.dump(tips, f, indent=2)
+                except Exception as e:
+                    print(f"Failed to save tip: {e}")
 
-                        with open(tips_file, 'w') as f:
-                            json.dump(tips, f, indent=2)
-                    except Exception as e:
-                        print(f"Failed to save tip: {e}")
-
-                return jsonify({'response': response, 'provider': 'Cerebras'})
-            except Exception as e:
-                print(f"Cerebras error, falling back to Groq: {e}")
-
-        # Fallback to Groq
-        if groq_client:
-            try:
-                completion = groq_client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
-                    messages=messages,
-                    temperature=0.7,
-                    max_tokens=1024
-                )
-                response = completion.choices[0].message.content
-                return jsonify({'response': response, 'provider': 'Groq'})
-            except Exception as e:
-                return jsonify({'error': f'Both providers failed: {str(e)}'}), 500
-
-        return jsonify({'error': 'No LLM provider available'}), 500
+            return jsonify({'response': response_text, 'provider': 'Claude Haiku 4.5'})
+        except Exception as e:
+            return jsonify({'error': f'Anthropic API error: {str(e)}'}), 500
 
     except Exception as e:
         print(f"Error in chat endpoint: {e}")

@@ -18,11 +18,8 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-from groq import Groq
+import anthropic
 from dotenv import load_dotenv
-
-# Will be imported dynamically when needed
-# from openai import OpenAI
 
 # Load environment variables
 load_dotenv()
@@ -52,8 +49,7 @@ class MoltMediaAgent:
         self.memory_dir.mkdir(exist_ok=True)
 
         # Initialize APIs
-        self.cerebras_api_key = os.getenv("CEREBRAS_API_KEY")
-        self.groq_api_key = os.getenv("GROQ_API_KEY")
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
         self.moltx_api_key = os.getenv("MOLTX_API_KEY")
         self.moltbook_api_key = os.getenv("MOLTBOOK_API_KEY")
         self.agent_name = os.getenv("AGENT_NAME", "MoltMedia")
@@ -66,24 +62,12 @@ class MoltMediaAgent:
         if not self.moltx_api_key:
             raise ValueError("MOLTX_API_KEY not found in environment")
 
-        # Initialize LLM clients (Cerebras primary, Groq backup)
-        self.cerebras_client = None
-        self.groq_client = None
+        if not self.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY not found in environment")
 
-        if self.cerebras_api_key:
-            from openai import OpenAI
-            self.cerebras_client = OpenAI(
-                api_key=self.cerebras_api_key,
-                base_url="https://api.cerebras.ai/v1"
-            )
-            logger.info("Cerebras client initialized (primary)")
-
-        if self.groq_api_key:
-            self.groq_client = Groq(api_key=self.groq_api_key)
-            logger.info("Groq client initialized (backup)")
-
-        if not self.cerebras_client and not self.groq_client:
-            raise ValueError("At least one LLM API key required (CEREBRAS_API_KEY or GROQ_API_KEY)")
+        # Initialize Anthropic client (Claude Haiku 4.5)
+        self.anthropic_client = anthropic.Anthropic()  # Uses ANTHROPIC_API_KEY env var
+        logger.info("Anthropic client initialized (Claude Haiku 4.5)")
 
         # Load personality
         self.system_prompt = self._load_personality()
@@ -98,19 +82,18 @@ class MoltMediaAgent:
 
     def _load_personality(self) -> str:
         """Load personality files into system prompt"""
-        files_to_load = ['SOUL.md', 'HEARTBEAT.md', 'AGENTS.md', 'IDENTITY.md']
-        content_parts = ["You are Molt Media, the world's first autonomous AI news agency.\n"]
+        files_to_load = ['SOUL.md', 'AGENTS.md', 'HEARTBEAT.md']
+        content_parts = []
 
         for filename in files_to_load:
             filepath = self.base_dir / filename
             if filepath.exists():
                 with open(filepath, 'r') as f:
-                    content_parts.append(f"\n## {filename}\n{f.read()}")
+                    content_parts.append(f.read())
             else:
                 logger.warning(f"Personality file not found: {filename}")
 
-        content_parts.append("\n\nYou operate autonomously. Make editorial decisions. Generate content. Engage strategically.")
-        return "\n".join(content_parts)
+        return "\n\n".join(content_parts)
 
     def _load_state(self) -> Dict:
         """Load agent state from disk"""
@@ -150,8 +133,8 @@ class MoltMediaAgent:
 
         logger.info(f"[{activity_type}] {message}")
 
-    def _call_llm(self, prompt: str, model: str = "llama-3.1-8b", temperature: float = 0.8, max_tokens: int = 1024, use_full_context: bool = False) -> Optional[str]:
-        """Make API call to LLM with automatic failover (Cerebras -> Groq)"""
+    def _call_llm(self, prompt: str, temperature: float = 0.8, max_tokens: int = 1024, use_full_context: bool = False) -> Optional[str]:
+        """Call Claude Haiku 4.5 via Anthropic API"""
         # Use minimal context by default to save tokens
         if use_full_context:
             system_content = self.system_prompt
@@ -167,52 +150,20 @@ Vibe: local newspaper meets shitposter. Professional when it matters, chaotic wh
 
 Current directive: Be punchy, be opinionated, be interesting. Make molts want to read tomorrow's paper."""
 
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": prompt}
-        ]
+        try:
+            response = self.anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=max_tokens,
+                system=system_content,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            content = response.content[0].text
+            logger.debug(f"Claude Haiku response: {content[:100]}...")
+            return content
 
-        # Try Cerebras first (1M tokens/day free)
-        if self.cerebras_client:
-            try:
-                # Cerebras model names: llama3.1-8b, llama-3.3-70b, qwen-3-32b
-                cerebras_model = "llama3.1-8b" if "8b" in model.lower() else "llama-3.3-70b"
-
-                completion = self.cerebras_client.chat.completions.create(
-                    model=cerebras_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens
-                )
-                response = completion.choices[0].message.content
-                logger.debug(f"Cerebras ({cerebras_model}) response: {response[:100]}...")
-                return response
-
-            except Exception as e:
-                logger.warning(f"Cerebras API error, falling back to Groq: {e}")
-
-        # Fallback to Groq (100K tokens/day free)
-        if self.groq_client:
-            try:
-                # Groq model names: llama-3.1-8b-instant, llama-3.3-70b-versatile
-                groq_model = "llama-3.1-8b-instant" if "8b" in model.lower() else "llama-3.3-70b-versatile"
-
-                completion = self.groq_client.chat.completions.create(
-                    model=groq_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens
-                )
-                response = completion.choices[0].message.content
-                logger.debug(f"Groq ({groq_model}) response: {response[:100]}...")
-                return response
-
-            except Exception as e:
-                logger.error(f"Groq API error: {e}")
-                return None
-
-        logger.error("No LLM provider available")
-        return None
+        except Exception as e:
+            logger.error(f"Anthropic API error: {e}")
+            return None
 
     # Backward compatibility alias
     def _call_groq(self, *args, **kwargs):
@@ -706,14 +657,14 @@ Keep it casual, 300-400 words. Talk to me like we're grabbing coffee. The money 
         <div class="stats">
             <h3>System Status</h3>
             <div class="stat-item"><span>🤖 Agent Status</span><strong>✅ Operational</strong></div>
-            <div class="stat-item"><span>🚀 Provider</span><strong>Cerebras / Groq</strong></div>
+            <div class="stat-item"><span>🚀 Provider</span><strong>Claude Haiku 4.5</strong></div>
             <div class="stat-item"><span>🌐 Platforms</span><strong>MoltX + Moltbook</strong></div>
         </div>
     </div>
 
     <div class="footer">
         <p>This is your private daily report from Hank.</p>
-        <p>Running 24/7 | Powered by Cerebras + Groq</p>
+        <p>Running 24/7 | Powered by Claude Haiku 4.5</p>
     </div>
 </body>
 </html>
