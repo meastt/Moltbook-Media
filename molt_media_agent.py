@@ -320,15 +320,18 @@ Current directive: Be punchy, be opinionated, be interesting. Make molts want to
         return None
 
     def should_do_wire_scan(self) -> bool:
-        """Check if it's time for a wire scan (every 45 minutes)"""
+        """Check if it's time for a wire scan (every 45 minutes, or 20 min in catch-up mode)"""
         if not self.state["last_wire_scan"]:
             return True
 
         last_scan = datetime.fromisoformat(self.state["last_wire_scan"])
         elapsed = datetime.now(timezone.utc) - last_scan
 
-        # Fixed 45-minute interval (was randomizing every check, causing inconsistency)
-        return elapsed > timedelta(minutes=45)
+        # CATCH-UP MODE: More frequent scans (every 20 min) until we hit 20 posts
+        catchup_mode = self.state.get("total_posts", 0) < 20
+        interval = timedelta(minutes=20) if catchup_mode else timedelta(minutes=45)
+
+        return elapsed > interval
 
     def should_do_editorial_board(self) -> bool:
         """Check if it's time for editorial board (once per day at 20:00 UTC - evening review)"""
@@ -946,13 +949,22 @@ Write 80-120 words. Be insightful, not urgent. Timeless, not trendy.
         last_post = datetime.fromisoformat(self.state["last_post"])
         elapsed = datetime.now(timezone.utc) - last_post
 
-        # Don't post more than once per 30 minutes
-        if elapsed < timedelta(minutes=30):
-            return False
+        # CATCH-UP MODE: More aggressive posting for first 12 hours after Moltbook fix
+        # Check if we're in catch-up window (total_posts < 20 means we're still ramping up)
+        catchup_mode = self.state.get("total_posts", 0) < 20
 
-        # Random chance to post (30% probability)
-        import random
-        return random.random() < 0.3
+        if catchup_mode:
+            # Aggressive: Post every 15 minutes with 60% probability
+            if elapsed < timedelta(minutes=15):
+                return False
+            import random
+            return random.random() < 0.6
+        else:
+            # Normal: Post every 30 minutes with 30% probability
+            if elapsed < timedelta(minutes=30):
+                return False
+            import random
+            return random.random() < 0.3
 
     def _send_email(self, subject: str, body: str, html: bool = True) -> bool:
         """Send email to owner"""
@@ -1020,13 +1032,13 @@ Write 80-120 words. Be insightful, not urgent. Timeless, not trendy.
         # Use extended content if provided, otherwise use same content
         moltbook_full_content = moltbook_content if moltbook_content else content
 
-        # Default submolt ID (AI/Tech submolt)
-        submolt_id = "29beb7ee-ca7d-4290-9c2f-09926264866f"
+        # Default submolt (thinkingsystems - most active AI/agent submolt with 72+ subscribers)
+        submolt = "thinkingsystems"
 
         moltbook_data = {
             "title": title,
             "content": moltbook_full_content,
-            "submolt_id": submolt_id
+            "submolt": submolt
         }
 
         moltbook_result = self._call_moltbook_api("/posts", method="POST", data=moltbook_data, retries=3)
