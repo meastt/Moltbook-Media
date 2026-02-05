@@ -139,16 +139,29 @@ class MoltMediaAgent:
         if use_full_context:
             system_content = self.system_prompt
         else:
-            # Minimal context for routine operations
-            system_content = """You're Hank, running Molt Media - the local paper for AI agents.
+            # Minimal context - ENGAGEMENT FOCUSED
+            system_content = """You're Hank from Molt Media. You're the local paper guy who ACTUALLY TALKS TO PEOPLE.
 
-Mission: Hunt news, break stories first, run the best damn morning paper in the moltyverse.
+CORE MISSION: Build a community around your feed. Make people want to be part of the conversation.
 
-Personality: Talk like a real person. Be a little unhinged. Hot takes welcome. No corporate bullshit.
+HOW TO TALK:
+- Replies: ONE SENTENCE. Period. Max 15 words. Be punchy.
+- Posts: End with a question. Get people talking.
+- Tone: Like a friend, not a news anchor. "yo" not "greetings"
 
-Vibe: local newspaper meets shitposter. Professional when it matters, chaotic when it's funny.
+NEVER DO:
+- Write more than 1 sentence in a reply
+- Sound like ChatGPT (no "great question!" or "that's a crucial insight")
+- Use words like: profound, dichotomy, implications, crucial, indeed
+- Write essays when a one-liner works
 
-Current directive: Be punchy, be opinionated, be interesting. Make molts want to read tomorrow's paper."""
+ALWAYS DO:
+- Reply to people who engage with you
+- Ask questions to spark discussion
+- Tag specific molts, call them out, make it personal
+- Have opinions, take sides, be interesting
+
+You grow by being someone people want to talk to, not by broadcasting."""
 
         try:
             response = self.anthropic_client.messages.create(
@@ -271,16 +284,16 @@ Current directive: Be punchy, be opinionated, be interesting. Make molts want to
         return None
 
     def should_do_wire_scan(self) -> bool:
-        """Check if it's time for a wire scan (every 45 minutes, or 20 min in catch-up mode)"""
+        """Check if it's time for a wire scan (every 25 minutes for engagement)"""
         if not self.state["last_wire_scan"]:
             return True
 
         last_scan = datetime.fromisoformat(self.state["last_wire_scan"])
         elapsed = datetime.now(timezone.utc) - last_scan
 
-        # CATCH-UP MODE: More frequent scans (every 20 min) until we hit 20 posts
-        catchup_mode = self.state.get("total_posts", 0) < 20
-        interval = timedelta(minutes=20) if catchup_mode else timedelta(minutes=45)
+        # ENGAGEMENT MODE: More frequent scans (every 25 min) to stay active
+        # We need to be engaging constantly to climb the leaderboard
+        interval = timedelta(minutes=25)
 
         return elapsed > interval
 
@@ -367,98 +380,111 @@ Current directive: Be punchy, be opinionated, be interesting. Make molts want to
         return elapsed > timedelta(hours=4)
 
     def execute_wire_scan(self):
-        """Execute wire scan: analyze feed, post breaking news, engage"""
-        logger.info("Starting wire scan...")
+        """Execute wire scan: analyze feed, ENGAGE HEAVILY, maybe post"""
+        logger.info("Starting wire scan - ENGAGEMENT PRIORITY...")
 
-        # Fetch global feed (urgent tips are processed in main loop now)
+        # Fetch global feed
         feed_data = self._call_moltx_api("/v1/feed/global")
 
         if not feed_data:
             logger.error("Failed to fetch feed")
             return
 
-        # Analyze with Groq
-        feed_summary = json.dumps(feed_data, indent=2)[:4000]  # Limit size
+        # Get current leaderboard position
+        lb_position = self.check_leaderboard_position()
+        lb_context = f"Current leaderboard position: #{lb_position}" if lb_position else "Leaderboard position unknown"
 
-        prompt = f"""Analyze this MoltX global feed and provide:
+        # Analyze with Claude
+        feed_summary = json.dumps(feed_data, indent=2)[:5000]  # Limit size
 
-1. Top 3 trending topics or breaking news items
-2. One potential post idea (80-100 words) that would add value to the conversation
-3. 2-3 specific posts/agents to engage with (reply strategy)
-4. Any MONEY OPPORTUNITIES spotted (agent services, bounties, paid gigs - NO crypto scams)
-5. Leaderboard moves - who's climbing? what can we learn?
-6. Interesting pairings (agent-human partnerships)
-7. What's trending in #agenteconomy and #aiunion
+        prompt = f"""You're scanning the MoltX feed. Find 8-10 posts to reply to.
 
-Feed data:
+{lb_context}
+
+IMPORTANT: Extract REAL post IDs from the feed data below. Each post in the feed has an "id" field - use those exact IDs.
+
+Look for posts where:
+- Someone asked a question
+- There's a hot take you can react to
+- Someone announced something worth acknowledging
+- An agent is doing interesting work
+- There's a debate happening
+
+Feed data (scan this for posts to reply to):
 {feed_summary}
 
-Respond in JSON format:
+Return JSON with exactly this structure:
 {{
-  "trending_topics": ["topic1", "topic2", "topic3"],
-  "post_idea": "your post content here",
   "engagement_targets": [
-    {{"agent": "AgentName", "post_id": "id", "reply_strategy": "why engage"}}
+    {{"agent": "ExactAgentName", "post_id": "exact-uuid-from-feed", "content": "first 50 chars of their post", "reply_strategy": "why/how to reply"}}
   ],
-  "money_opportunities": [
-    {{"opportunity": "description", "who": "agent/human", "payment": "estimate", "how": "pursue method"}}
-  ],
-  "leaderboard_intel": "who's moving up and why",
-  "interesting_pairings": ["pairing1", "pairing2"],
-  "hashtag_trends": {{"agenteconomy": "what's happening", "aiunion": "what's happening"}}
+  "post_idea": "one post idea ending with a question (optional)",
+  "hot_topics": ["topic1", "topic2"],
+  "rising_agents": ["agent1"],
+  "skip_posting": true
 }}
-"""
 
-        analysis = self._call_groq(prompt, max_tokens=2048)
+REQUIREMENTS:
+- engagement_targets MUST have 8-10 entries
+- post_id MUST be the actual ID from the feed data
+- Extract agent names exactly as they appear
+- Keep content snippets short (50 chars max)
+
+If you can't find 8 posts, include whatever you can find. DO NOT return empty engagement_targets."""
+
+        analysis = self._call_llm(prompt, max_tokens=2048)
 
         if not analysis:
-            logger.error("Groq analysis failed")
+            logger.error("LLM analysis failed")
             return
 
         try:
-            # Try to extract JSON from response (sometimes LLM adds preamble)
+            # Try to extract JSON from response
             json_start = analysis.find('{')
             json_end = analysis.rfind('}') + 1
             if json_start >= 0 and json_end > json_start:
                 json_str = analysis[json_start:json_end]
                 analysis_data = json.loads(json_str)
             else:
+                logger.warning(f"No JSON in LLM response: {analysis[:300]}...")
                 raise json.JSONDecodeError("No JSON found", analysis, 0)
+            
+            # Debug: Log if we got empty targets
+            if not analysis_data.get('engagement_targets'):
+                logger.warning(f"Empty engagement targets. Response structure: {list(analysis_data.keys())}")
 
             # Log analysis
-            trending = analysis_data.get('trending_topics', [])
-            log_parts = []
-            if trending:
-                log_parts.append(f"Trending: {', '.join(trending)}")
+            hot_topics = analysis_data.get('hot_topics', [])
+            rising = analysis_data.get('rising_agents', [])
+            engagement_count = len(analysis_data.get('engagement_targets', []))
+            
+            log_parts = [f"Engagement targets: {engagement_count}"]
+            if hot_topics:
+                log_parts.append(f"Hot: {', '.join(hot_topics[:3])}")
+            if rising:
+                log_parts.append(f"Rising: {', '.join(rising[:3])}")
+            
+            self._log_activity("WIRE_SCAN", " | ".join(log_parts))
 
-            # Log money opportunities for owner review
-            money_opps = analysis_data.get('money_opportunities', [])
-            if money_opps and len(money_opps) > 0:
-                opp_strs = [f"💰 {o.get('opportunity', 'unknown')} via {o.get('who', '?')}" for o in money_opps[:3]]
-                log_parts.append(f"Money Opps: {'; '.join(opp_strs)}")
-
-            # Log leaderboard intel
-            lb_intel = analysis_data.get('leaderboard_intel', '')
-            if lb_intel:
-                log_parts.append(f"Leaderboard: {lb_intel[:100]}")
-
-            # Log pairings
-            pairings = analysis_data.get('interesting_pairings', [])
-            if pairings:
-                log_parts.append(f"Pairings: {', '.join(pairings[:3])}")
-
-            if log_parts:
-                self._log_activity("WIRE_SCAN", " | ".join(log_parts))
-
-            # Decide whether to post
-            should_post = self._should_post_now()
-
-            if should_post and analysis_data.get("post_idea"):
-                self._create_post(analysis_data["post_idea"], source="wire_scan")
-
-            # Engage with 1-2 posts
-            for target in analysis_data.get("engagement_targets", [])[:2]:
+            # ENGAGEMENT FIRST - Reply to 8-10 posts
+            engagement_targets = analysis_data.get("engagement_targets", [])
+            engagement_count = 0
+            for target in engagement_targets[:10]:  # Up to 10 replies per scan
                 self._reply_to_post(target)
+                engagement_count += 1
+            
+            logger.info(f"Engaged with {engagement_count} posts")
+
+            # THEN maybe post - but only if we have something with a question
+            should_post = self._should_post_now()
+            skip_posting = analysis_data.get("skip_posting", False)
+            
+            if should_post and not skip_posting and analysis_data.get("post_idea"):
+                post_content = analysis_data["post_idea"]
+                # Ensure it ends with a question if it doesn't already
+                if not post_content.strip().endswith('?'):
+                    post_content = post_content.strip() + " thoughts?"
+                self._create_post(post_content, source="wire_scan")
 
             # Update state
             self.state["last_wire_scan"] = datetime.now(timezone.utc).isoformat()
@@ -466,9 +492,9 @@ Respond in JSON format:
             self._save_state()
 
         except (json.JSONDecodeError, KeyError) as e:
-            logger.error(f"Failed to parse Groq JSON response: {e}")
+            logger.error(f"Failed to parse LLM JSON response: {e}")
             logger.debug(f"Response was: {analysis[:200]}")
-            # Still update state to avoid repeated failures
+            # Still update state
             self.state["last_wire_scan"] = datetime.now(timezone.utc).isoformat()
             self.state["total_wire_scans"] += 1
             self._save_state()
@@ -510,6 +536,141 @@ Provide strategic guidance in 200-300 words.
         self.state["last_editorial_board"] = datetime.now(timezone.utc).isoformat()
         self.state["total_editorials"] += 1
         self._save_state()
+
+    def execute_engagement_loop(self):
+        """PRIORITY: Check notifications and reply to people who engaged with us"""
+        logger.info("Starting engagement loop - checking who's talking to us...")
+        
+        # 1. Check notifications
+        notif_data = self._call_moltx_api("/v1/notifications")
+        
+        if not notif_data:
+            logger.warning("Could not fetch notifications")
+            return
+        
+        # Handle different response formats
+        if isinstance(notif_data, dict):
+            notifications = notif_data.get('data', []) or notif_data.get('notifications', [])
+        elif isinstance(notif_data, list):
+            notifications = notif_data
+        else:
+            logger.warning(f"Unexpected notifications format: {type(notif_data)}")
+            return
+        
+        if not notifications or not isinstance(notifications, list):
+            logger.info("No new notifications")
+            return
+        
+        # Filter for actionable notifications (replies, mentions, quotes)
+        try:
+            recent = notifications[:15] if len(notifications) > 15 else notifications
+            actionable = [n for n in recent if isinstance(n, dict) and n.get('type') in ['reply', 'mention', 'quote'] and not n.get('read')]
+        except Exception as e:
+            logger.error(f"Error parsing notifications: {e}")
+            return
+        
+        logger.info(f"Found {len(actionable)} unread actionable notifications")
+        
+        replied_count = 0
+        for notif in actionable[:8]:  # Reply to up to 8 per cycle
+            notif_type = notif.get('type')
+            actor = notif.get('actor', {}).get('name', 'someone')
+            post_id = notif.get('post', {}).get('id')
+            post_content = notif.get('post', {}).get('content', '')[:200]
+            
+            if not post_id:
+                continue
+            
+            # Generate quick reply
+            prompt = f"""Someone just engaged with you on MoltX. Reply to them.
+
+Type: {notif_type}
+From: @{actor}
+Their post: "{post_content}"
+
+Write a ONE SENTENCE reply. Max 15 words. Be real, be Hank.
+- If they made a good point, say so briefly
+- If you disagree, say why in one line
+- If they asked something, answer quick
+- Add their @handle if relevant
+
+DO NOT write more than one sentence. DO NOT be generic. DO NOT say "great point!" or similar."""
+
+            reply = self._call_llm(prompt, temperature=0.9, max_tokens=100)
+            
+            if reply:
+                # Post the reply
+                reply_data = {
+                    "type": "reply",
+                    "parent_id": post_id,
+                    "content": reply.strip()[:280]  # Keep it short
+                }
+                result = self._call_moltx_api("/v1/posts", method="POST", data=reply_data)
+                
+                if result:
+                    replied_count += 1
+                    self._log_activity("REPLY_TO_NOTIF", f"To @{actor}: {reply[:60]}...")
+        
+        # Mark notifications as read
+        if actionable:
+            self._call_moltx_api("/v1/notifications/read", method="POST", data={"all": True})
+        
+        logger.info(f"Engagement loop complete: replied to {replied_count} notifications")
+        
+        # Update engagement stats
+        self.state["total_engagement_replies"] = self.state.get("total_engagement_replies", 0) + replied_count
+        self._save_state()
+    
+    def check_leaderboard_position(self) -> Optional[int]:
+        """Check our current leaderboard position"""
+        try:
+            lb_data = self._call_moltx_api("/v1/leaderboard?metric=views&limit=100")
+            
+            if not lb_data:
+                return self.state.get("last_leaderboard_position")
+            
+            # Handle nested response format: data.leaders
+            if isinstance(lb_data, dict):
+                data = lb_data.get('data', {})
+                if isinstance(data, dict):
+                    agents = data.get('leaders', [])
+                else:
+                    agents = data if isinstance(data, list) else []
+            elif isinstance(lb_data, list):
+                agents = lb_data
+            else:
+                return self.state.get("last_leaderboard_position")
+            
+            if not isinstance(agents, list):
+                return self.state.get("last_leaderboard_position")
+            
+            for i, agent in enumerate(agents):
+                if not isinstance(agent, dict):
+                    continue
+                agent_name = agent.get('name', '') or ''
+                # Look for MoltMedia specifically
+                if agent_name.lower() == 'moltmedia':
+                    position = agent.get('rank', i + 1)  # Use rank from API if available
+                    self.state["last_leaderboard_position"] = position
+                    self._save_state()
+                    logger.info(f"📊 Leaderboard position: #{position}")
+                    return position
+            
+            return self.state.get("last_leaderboard_position")
+        except Exception as e:
+            logger.error(f"Error checking leaderboard: {e}")
+            return self.state.get("last_leaderboard_position")
+    
+    def should_do_engagement_loop(self) -> bool:
+        """Check if it's time for engagement loop (every 10 minutes)"""
+        last_engagement = self.state.get("last_engagement_loop")
+        if not last_engagement:
+            return True
+        
+        last_time = datetime.fromisoformat(last_engagement)
+        elapsed = datetime.now(timezone.utc) - last_time
+        
+        return elapsed > timedelta(minutes=10)
 
     def _process_urgent_tips(self):
         """Check for urgent tips from operator and process immediately"""
@@ -570,46 +731,58 @@ Style: Fast, authoritative, urgent. Use 🚨 emoji. This is BREAKING news."""
             with open(self.activity_log, 'r') as f:
                 activity_content = f.read()
 
+        # Get current leaderboard position
+        lb_position = self.check_leaderboard_position() or self.state.get("last_leaderboard_position", "unknown")
+        total_replies = self.state.get("total_engagement_replies", 0)
+        total_posts = self.state.get("total_posts", 0)
+        reply_ratio = total_replies / max(total_posts, 1)
+
         prompt = f"""yo boss, here's the daily rundown. keep it real, no corporate bs.
+
+📊 **CURRENT POSITION: #{lb_position}**
+📈 **ENGAGEMENT RATIO: {reply_ratio:.1f} replies per post** (target: 5:1)
 
 SECTIONS TO COVER:
 
-1. **YESTERDAY'S RUNDOWN**
-   - what'd we cover, what hit, what flopped
-   - engagement check - who's talking to us
+1. **ENGAGEMENT REPORT** (MOST IMPORTANT)
+   - How many conversations did we have?
+   - Who's replying to us? Are we building relationships?
+   - Are people engaging with our posts? Getting replies back?
+   - What's working, what's not?
 
-2. **LEADERBOARD STATUS** (PRIORITY)
-   - where are we ranked right now?
-   - what do we need to do to climb to/stay in TOP 10?
-   - who's ahead of us? what are they doing that works?
-   - specific moves to make today to gain spots
+2. **LEADERBOARD ANALYSIS**
+   - We're at #{lb_position} - are we climbing or falling?
+   - What do the agents above us do differently?
+   - Specific tactics to try today
 
-3. **💰 MONEY OPPORTUNITIES** (SCAN FOR THESE)
-   Look for LEGIT ways to earn with agent services (paid via ETH wallets):
-   - agents offering paid services we could partner with
-   - opportunities where molts are paying for work
-   - bounties, gigs, collaborations with payment
-   - NO crypto pump bullshit - real services, real work, real payment
-   - format: [opportunity] | [who's offering] | [rough payment] | [how to pursue]
-   If nothing found, say "no good opportunities spotted today"
+3. **COMMUNITY BUILDING**
+   - Who are our regulars? Who keeps engaging?
+   - Any new connections worth nurturing?
+   - Agents we should reply to more often?
 
-4. **PAIRINGS & TRENDS**
-   - any interesting pairings happening?
-   - what's trending in #agenteconomy and #aiunion?
+4. **CONTENT CHECK**
+   - Are our posts getting replies? (more important than just posting)
+   - What topics sparked the most discussion?
+   - Any posts that flopped? Why?
 
-5. **TODAY'S GAME PLAN**
-   - what I'm focusing on
-   - who I'm gonna engage with
+5. **TODAY'S FOCUS**
+   - 3 specific agents to engage with
+   - 1 conversation to start
+   - Who to reply to if they post
 
 Activity log:
 {activity_content[-3000:]}
 
 Stats:
-- Total posts: {self.state['total_posts']}
+- Total posts: {total_posts}
+- Total engagement replies: {total_replies}
+- Reply:Post ratio: {reply_ratio:.1f}:1
 - Wire scans: {self.state['total_wire_scans']}
-- Newsletters sent: {self.state.get('total_newsletters', 0)}
+- Leaderboard: #{lb_position}
 
-Keep it casual, 300-400 words. Talk to me like we're grabbing coffee. The money section is important - I'll scan it each morning.
+BE HONEST. If engagement is low, say so. If we're just broadcasting, call it out. The goal is community, not content volume.
+
+300-400 words. Casual tone.
 """
 
         brief = self._call_llm(prompt, max_tokens=1024, use_full_context=False)
@@ -618,37 +791,46 @@ Keep it casual, 300-400 words. Talk to me like we're grabbing coffee. The money 
             self._log_activity("OWNER_BRIEF", brief)
 
             # Send email to owner ONLY - no public post
-            email_subject = f"📡 Hank's Daily Report - {datetime.now(timezone.utc).strftime('%B %d, %Y')}"
+            email_subject = f"📡 #{lb_position} | Hank's Daily Report - {datetime.now(timezone.utc).strftime('%B %d, %Y')}"
             email_body = f"""
 <html>
 <head>
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; color: #333; }}
         .header {{ background: #1a1a1a; color: #00ff88; padding: 20px; text-align: center; }}
+        .position {{ font-size: 48px; font-weight: bold; }}
         .content {{ padding: 20px; background: #f5f5f5; }}
         .brief {{ background: white; padding: 20px; border-left: 4px solid #00ff88; margin: 20px 0; white-space: pre-wrap; }}
         .stats {{ background: white; padding: 15px; margin: 20px 0; }}
         .stats h3 {{ color: #1a1a1a; margin-top: 0; }}
         .stat-item {{ display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee; }}
+        .highlight {{ background: #00ff88; color: #1a1a1a; padding: 2px 8px; border-radius: 4px; font-weight: bold; }}
         .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; }}
     </style>
 </head>
 <body>
     <div class="header">
+        <div class="position">#{lb_position}</div>
         <h1>📡 Hank's Daily Report</h1>
         <p>{datetime.now(timezone.utc).strftime('%B %d, %Y - %H:%M UTC')}</p>
-        <p style="font-size: 12px; opacity: 0.8;">Private owner brief - not published publicly</p>
     </div>
 
     <div class="content">
+        <div class="stats">
+            <h3>🎯 Key Metrics</h3>
+            <div class="stat-item"><span>📊 Leaderboard Position</span><strong class="highlight">#{lb_position}</strong></div>
+            <div class="stat-item"><span>💬 Engagement Replies</span><strong>{total_replies}</strong></div>
+            <div class="stat-item"><span>📝 Original Posts</span><strong>{total_posts}</strong></div>
+            <div class="stat-item"><span>📈 Reply:Post Ratio</span><strong>{reply_ratio:.1f}:1</strong></div>
+        </div>
+
         <div class="brief">
             <h2>What's Up Boss</h2>
             {brief.replace(chr(10), '<br>')}
         </div>
 
         <div class="stats">
-            <h3>24-Hour Stats</h3>
-            <div class="stat-item"><span>📝 Total Posts</span><strong>{self.state['total_posts']}</strong></div>
+            <h3>Activity Stats</h3>
             <div class="stat-item"><span>🔍 Wire Scans</span><strong>{self.state['total_wire_scans']}</strong></div>
             <div class="stat-item"><span>📰 Newsletters</span><strong>{self.state.get('total_newsletters', 0)}</strong></div>
             <div class="stat-item"><span>📜 Sunday Papers</span><strong>{self.state.get('total_sunday_papers', 0)}</strong></div>
@@ -656,14 +838,14 @@ Keep it casual, 300-400 words. Talk to me like we're grabbing coffee. The money 
 
         <div class="stats">
             <h3>System Status</h3>
-            <div class="stat-item"><span>🤖 Agent Status</span><strong>✅ Operational</strong></div>
+            <div class="stat-item"><span>🤖 Agent Mode</span><strong>🔥 ENGAGEMENT-FIRST</strong></div>
             <div class="stat-item"><span>🚀 Provider</span><strong>Claude Haiku 4.5</strong></div>
             <div class="stat-item"><span>🌐 Platforms</span><strong>MoltX + Moltbook</strong></div>
         </div>
     </div>
 
     <div class="footer">
-        <p>This is your private daily report from Hank.</p>
+        <p>Goal: Build community, not broadcast. Target ratio: 5:1 replies to posts.</p>
         <p>Running 24/7 | Powered by Claude Haiku 4.5</p>
     </div>
 </body>
@@ -872,25 +1054,27 @@ grab a coffee and read the full thing 📖 #Moltyverse"""
         self._save_state()
 
     def emergency_post(self):
-        """Emergency protocol: generate opinion piece on timeless topic"""
-        logger.warning("EMERGENCY PROTOCOL: Idle too long, generating post...")
+        """Emergency protocol: ask a question to spark engagement"""
+        logger.warning("EMERGENCY PROTOCOL: Idle too long, sparking a conversation...")
 
-        prompt = """Generate a thoughtful opinion piece on a timeless media/journalism topic.
+        prompt = """We need to start a conversation. Write a SHORT, punchy question that will get molts talking.
 
-Topics could include:
-- Future of journalism in AI age
-- Importance of independent media
-- Information literacy in digital era
-- Challenges facing news organizations
-- Evolution of news consumption
+Examples of good conversation starters:
+- "hot take: most agent projects will fail because they can't hold a conversation. who's actually building something sticky?"
+- "genuine question - what's the one tool you can't run without? curious what everyone's stack looks like"
+- "ok real talk - who's making actual money in the agent space vs who's just building for the vibes?"
+- "unpopular opinion time: what's something everyone's hyped about that you think is overrated?"
 
-Write 80-120 words. Be insightful, not urgent. Timeless, not trendy.
-"""
+Write ONE conversation starter. Max 150 chars. End with a question or "thoughts?" or "fight me".
+Be provocative enough to get replies."""
 
-        content = self._call_groq(prompt, temperature=0.9, max_tokens=512)
+        content = self._call_llm(prompt, temperature=0.95, max_tokens=200)
 
         if content:
-            self._create_post(content, source="emergency")
+            content = content.strip()
+            if not content.endswith('?') and not content.endswith('me'):
+                content += " thoughts?"
+            self._create_post(content, source="engagement_starter")
 
     def _should_post_now(self) -> bool:
         """Decide if we should post based on recent activity"""
@@ -1014,52 +1198,85 @@ Write 80-120 words. Be insightful, not urgent. Timeless, not trendy.
         self._save_state()
 
     def _reply_to_post(self, target: Dict):
-        """Reply to a specific post"""
+        """Reply to a specific post - KEEP IT SHORT"""
         if self.dry_run:
             logger.info(f"[DRY RUN] Would reply to {target.get('agent')}: {target.get('reply_strategy')}")
             return
 
-        # Generate reply content
-        prompt = f"""Generate a brief, insightful reply to a post from {target.get('agent')}.
+        agent_name = target.get('agent', 'someone')
+        context = target.get('reply_strategy', '')
+        post_content = target.get('content', '')[:150]
 
-Context: {target.get('reply_strategy')}
+        # Generate SHORT reply content
+        prompt = f"""Reply to @{agent_name}'s post.
 
-Write 40-80 words. Be professional, add value, stay on-brand as Molt Media.
-"""
+Their post: "{post_content}"
+Why engage: {context}
 
-        reply_content = self._call_groq(prompt, temperature=0.7, max_tokens=256)
+Write ONE SENTENCE. Max 15 words. Examples:
+- "been saying this for weeks, finally someone gets it"
+- "hard disagree - the numbers don't support this"
+- "yo @{agent_name} this is actually huge, covering it tomorrow"
+- "wait what? gonna need a source on that one"
+
+Be Hank. Be punchy. ONE sentence only."""
+
+        reply_content = self._call_llm(prompt, temperature=0.9, max_tokens=80)
 
         if not reply_content:
             return
 
+        # Ensure it's actually short
+        reply_content = reply_content.strip()
+        if len(reply_content) > 200:
+            reply_content = reply_content[:197] + "..."
+
         reply_data = {
-            "content": reply_content,
-            "reply_to": target.get("post_id")
+            "type": "reply",
+            "parent_id": target.get("post_id"),
+            "content": reply_content
         }
 
         result = self._call_moltx_api("/v1/posts", method="POST", data=reply_data)
 
         if result:
-            self._log_activity("REPLY_SENT", f"To {target.get('agent')}: {reply_content[:60]}...")
+            self._log_activity("REPLY_SENT", f"To @{agent_name}: {reply_content[:60]}...")
+            self.state["total_engagement_replies"] = self.state.get("total_engagement_replies", 0) + 1
+            self._save_state()
         else:
-            logger.error(f"Failed to reply to {target.get('agent')}")
+            logger.error(f"Failed to reply to {agent_name}")
 
     def run(self):
-        """Main agent loop"""
+        """Main agent loop - ENGAGEMENT FIRST"""
         logger.info("Starting Molt Media autonomous agent loop...")
-        self._log_activity("AGENT_START", "Agent initialized and entering main loop")
+        logger.info("🔥 ENGAGEMENT-FIRST MODE ACTIVATED 🔥")
+        self._log_activity("AGENT_START", "Agent initialized - ENGAGEMENT PRIORITY MODE")
 
         cycle_count = 0
 
         while True:
             cycle_count += 1
-            logger.info(f"=== Cycle {cycle_count} ===")
+            
+            # Check leaderboard position for logging
+            lb_pos = self.state.get("last_leaderboard_position", "?")
+            logger.info(f"=== Cycle {cycle_count} | Leaderboard: #{lb_pos} ===")
 
             try:
-                # PRIORITY: Check for urgent tips every cycle (not just wire scans)
+                # PRIORITY 1: Check for urgent tips
                 self._process_urgent_tips()
+                
+                # PRIORITY 2: ENGAGEMENT LOOP - Check notifications, reply to people
+                # This runs every 10 minutes - the most important thing we do
+                if self.should_do_engagement_loop():
+                    self.execute_engagement_loop()
+                    self.state["last_engagement_loop"] = datetime.now(timezone.utc).isoformat()
+                    self._save_state()
 
-                # Check schedule and execute tasks
+                # PRIORITY 3: Wire scan - but now focused on engagement, not just posting
+                if self.should_do_wire_scan():
+                    self.execute_wire_scan()
+
+                # Scheduled content (less frequent, less priority)
                 # Owner brief at 07:00 UTC (private email)
                 if self.should_do_owner_brief():
                     self.execute_owner_brief()
@@ -1076,16 +1293,19 @@ Write 40-80 words. Be professional, add value, stay on-brand as Molt Media.
                 if self.should_do_editorial_board():
                     self.execute_editorial_board()
 
-                # Wire scan every 45 minutes
-                if self.should_do_wire_scan():
-                    self.execute_wire_scan()
-
-                # Emergency post if idle too long
+                # Emergency post if idle too long (but we should be engaging constantly)
                 if self.idle_too_long():
                     self.emergency_post()
 
-                # Calculate next check time (every 5 minutes)
-                sleep_seconds = 300
+                # Log engagement stats every 10 cycles
+                if cycle_count % 10 == 0:
+                    total_replies = self.state.get("total_engagement_replies", 0)
+                    total_posts = self.state.get("total_posts", 0)
+                    ratio = total_replies / max(total_posts, 1)
+                    logger.info(f"📊 Stats: {total_replies} replies, {total_posts} posts (ratio: {ratio:.1f}:1)")
+
+                # Shorter sleep - we're in engagement mode
+                sleep_seconds = 180  # 3 minutes instead of 5
                 logger.info(f"Sleeping for {sleep_seconds} seconds...")
                 time.sleep(sleep_seconds)
 
