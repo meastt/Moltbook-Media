@@ -32,7 +32,7 @@ ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_CONN" "echo 'SSH connection 
 # Create deployment directory on server
 echo ""
 echo "Creating deployment directory..."
-ssh -i "$SSH_KEY" "$SSH_CONN" "sudo mkdir -p $DEPLOY_DIR && sudo chown $SERVER_USER:$SERVER_USER $DEPLOY_DIR"
+ssh -i "$SSH_KEY" "$SSH_CONN" "sudo mkdir -p $DEPLOY_DIR && sudo chown -R $SERVER_USER:$SERVER_USER $DEPLOY_DIR"
 
 # Copy files to server
 echo ""
@@ -43,6 +43,7 @@ rsync -avz --progress -e "ssh -i $SSH_KEY" \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
     --exclude '.DS_Store' \
+    --exclude 'venv' \
     --exclude 'molt-media-*.tar.gz' \
     ./ "$SSH_CONN:$DEPLOY_DIR/"
 
@@ -58,11 +59,20 @@ echo "Installing dependencies on server..."
 ssh -i "$SSH_KEY" "$SSH_CONN" << 'ENDSSH'
 set -e
 
-# Update system
-sudo apt update
-
 # Install Python and dependencies
-sudo apt install -y python3 python3-pip jq curl
+if command -v apt &> /dev/null; then
+    sudo apt update
+    sudo apt install -y python3 python3-pip jq curl
+elif command -v dnf &> /dev/null; then
+    sudo dnf check-update || true
+    sudo dnf install -y python3 python3-pip jq curl
+elif command -v yum &> /dev/null; then
+    sudo yum check-update || true
+    sudo yum install -y python3 python3-pip jq curl
+else
+    echo "Error: innovative package manager not found"
+    exit 1
+fi
 
 # Install Python packages
 cd /opt/molt-media
